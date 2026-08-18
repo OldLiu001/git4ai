@@ -5,9 +5,9 @@
 #   1) 变更行数 ≤ 50（新增+删除；.md / 测试文件 / 隐藏文件豁免）
 #   2) commit message 去空白后 ≥ 300 字
 #   3) 代码变更必须伴随同目录同名 .spec.md 变更（首次 commit 豁免）
-# 违规只拒绝、不回滚；其余子命令原样透传真实 git。
+# 违规只拒绝、不回滚；其余子命令原样透传真实 git（同目录 git-origin）。
 #
-# 版本: 0.1.0
+# 版本: 0.2.0
 set -u
 
 MAX_LINES=50
@@ -17,21 +17,33 @@ MIN_MSG_CHARS=300
 export LC_ALL="${LC_ALL:-en_US.UTF-8}"
 
 SELF="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
-
-# ---------- 工具函数 ----------
-
-# 遍历 PATH，返回第一个非 wrapper 自身的真实 git 路径
+# 真实 git = 软链目标解析（自身被软链为 git 时，真实 git 在 PATH 其他位置）
+# resolve_real_git 遍历 PATH，跳过 wrapper 自身（含软链解析），返回第一个真实 git
 resolve_real_git() {
-  local dir cand resolved
+  local dir cand resolved self_real
   local -a _paths
+  # 自身真实路径（解析软链）
+  self_real="$(cd "$(dirname "$0")" 2>/dev/null && pwd)/$(basename "$0")"
   IFS=: read -r -a _paths <<< "$PATH"
   for dir in "${_paths[@]}"; do
     [ -n "$dir" ] || dir="."
     cand="$dir/git"
     [ -x "$cand" ] || continue
     [ -f "$cand" ] || continue   # 跳过目录（如 QClaw config/bin/git 是目录）
+    # 跳过自身（软链或真实路径）
     resolved="$(cd "$dir" 2>/dev/null && pwd)/git"
-    [ "$resolved" = "$SELF" ] && continue
+    if [ "$resolved" = "$SELF" ] || [ "$resolved" = "$self_real" ]; then
+      continue
+    fi
+    # 跳过软链指向自身的条目
+    if [ -L "$cand" ]; then
+      local link_target
+      link_target="$(readlink "$cand")"
+      case "$link_target" in
+        /*) [ "$link_target" = "$self_real" ] && continue ;;
+        *) [ "$(cd "$dir" && pwd)/$link_target" = "$self_real" ] && continue ;;
+      esac
+    fi
     echo "$resolved"
     return 0
   done
