@@ -69,4 +69,4 @@ git4ai 是一个 git 包装脚本（wrapper）：通过 PATH 前置覆盖 `git` 
 |---|---|---|---|
 | 2026-08-18 | 0.1.0 | 初版：规格与验收测试 | `45bd821` |
 | 2026-08-18 | 0.1.0 | 初版：git4ai 实现 + install.sh | `b8c6191` |
-| 2026-08-18 | 0.1.0 | 初版：README 文档 | 待提交 |
+| 2026-08-18 | 0.1.1 | 修复：bash 3.2 下空数组展开兼容（`set -u` 下 `"${arr[@]}"` 报 unbound variable，导致 commit 路径崩溃）；`resolve_real_git` 跳过目录型 git 条目（QClaw 环境） | 待提交 |

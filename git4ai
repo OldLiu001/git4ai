@@ -29,6 +29,7 @@ resolve_real_git() {
     [ -n "$dir" ] || dir="."
     cand="$dir/git"
     [ -x "$cand" ] || continue
+    [ -f "$cand" ] || continue   # 跳过目录（如 QClaw config/bin/git 是目录）
     resolved="$(cd "$dir" 2>/dev/null && pwd)/git"
     [ "$resolved" = "$SELF" ] && continue
     echo "$resolved"
@@ -153,10 +154,10 @@ elif [ -n "$msg_file" ]; then
   fi
   msg_source="m"
 elif [ -n "$reuse" ]; then
-  msg="$("$REAL_GIT" "${GLOBAL_ARGS[@]}" log -1 --format=%B "$reuse" 2>/dev/null)" || msg=""
+  msg="$("$REAL_GIT" ${GLOBAL_ARGS[@]+"${GLOBAL_ARGS[@]}"} log -1 --format=%B "$reuse" 2>/dev/null)" || msg=""
   [ -n "$msg" ] && msg_source="m"
 elif [ "$amend" -eq 1 ]; then
-  msg="$("$REAL_GIT" "${GLOBAL_ARGS[@]}" log -1 --format=%B HEAD 2>/dev/null)" || msg=""
+  msg="$("$REAL_GIT" ${GLOBAL_ARGS[@]+"${GLOBAL_ARGS[@]}"} log -1 --format=%B HEAD 2>/dev/null)" || msg=""
   [ -n "$msg" ] && msg_source="m"
 fi
 
@@ -168,7 +169,7 @@ if [ -z "$msg_source" ]; then
 fi
 
 # 检查 1：变更行数（暂存区 numstat，新增+删除）
-numstat="$("$REAL_GIT" "${GLOBAL_ARGS[@]}" diff --cached --numstat 2>/dev/null)"
+numstat="$("$REAL_GIT" ${GLOBAL_ARGS[@]+"${GLOBAL_ARGS[@]}"} diff --cached --numstat 2>/dev/null)"
 add_total=0
 del_total=0
 changed_paths=()
@@ -194,17 +195,17 @@ chars="${#msg_nw}"
 
 # 检查 3：spec 同步（首次 commit 豁免）
 first_commit=0
-if ! "$REAL_GIT" "${GLOBAL_ARGS[@]}" rev-parse --verify -q HEAD >/dev/null 2>&1; then
+if ! "$REAL_GIT" ${GLOBAL_ARGS[@]+"${GLOBAL_ARGS[@]}"} rev-parse --verify -q HEAD >/dev/null 2>&1; then
   first_commit=1
 fi
 spec_missing=()
 if [ "$first_commit" -eq 0 ]; then
-  for p in "${changed_paths[@]}"; do
+  for p in ${changed_paths[@]+"${changed_paths[@]}"}; do
     is_exempt "$p" && continue
     case "$p" in *.spec.md) continue ;; esac
     sp="$(spec_of "$p")"
     found=0
-    for cp in "${changed_paths[@]}"; do
+    for cp in ${changed_paths[@]+"${changed_paths[@]}"}; do
       [ "$cp" = "$sp" ] && found=1
     done
     [ "$found" -eq 0 ] && spec_missing+=("$p")
@@ -225,7 +226,7 @@ if [ "$violations" -gt 0 ]; then
     n=$((n+1))
     out="${out}[${n}/${violations}] 变更行数超限：本次共 ${total} 行（+${add_total}/-${del_total}），限额 ${MAX_LINES} 行"$'\n'
     out="${out}      超限文件明细："$'\n'
-    for pf in "${per_file[@]}"; do
+    for pf in ${per_file[@]+"${per_file[@]}"}; do
       p="${pf%%|*}"; rest="${pf#*|}"
       aa="${rest%%|*}"; dd="${rest#*|}"
       is_exempt "$p" && continue
@@ -241,7 +242,7 @@ if [ "$violations" -gt 0 ]; then
   if [ "$spec_bad" -eq 1 ]; then
     n=$((n+1))
     out="${out}[${n}/${violations}] 缺少 spec 同步：以下代码文件的 .spec.md 不在本次变更中"$'\n'
-    for p in "${spec_missing[@]}"; do
+    for p in ${spec_missing[@]+"${spec_missing[@]}"}; do
       out="${out}      · ${p} → 需要 $(spec_of "$p")（新增或修改，且必须与代码同一次提交）"$'\n'
     done
     out="${out}      建议：按 spec 模板补充「用途 / 对外接口 / 边界与异常用例 / 依赖与影响面 / 变更记录」。"$'\n'
