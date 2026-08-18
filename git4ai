@@ -1,0 +1,255 @@
+#!/usr/bin/env bash
+# git4ai — AI 提交规范强制器（git wrapper）
+#
+# 通过 PATH 前置覆盖 `git`，仅拦截 commit 子命令，提交前强制检查三条规范：
+#   1) 变更行数 ≤ 50（新增+删除；.md / 测试文件 / 隐藏文件豁免）
+#   2) commit message 去空白后 ≥ 300 字
+#   3) 代码变更必须伴随同目录同名 .spec.md 变更（首次 commit 豁免）
+# 违规只拒绝、不回滚；其余子命令原样透传真实 git。
+#
+# 版本: 0.1.0
+set -u
+
+MAX_LINES=50
+MIN_MSG_CHARS=300
+
+# 字符计数依赖 UTF-8 locale（bash ${#var} 按字符计）
+export LC_ALL="${LC_ALL:-en_US.UTF-8}"
+
+SELF="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
+
+# ---------- 工具函数 ----------
+
+# 遍历 PATH，返回第一个非 wrapper 自身的真实 git 路径
+resolve_real_git() {
+  local dir cand resolved
+  local -a _paths
+  IFS=: read -r -a _paths <<< "$PATH"
+  for dir in "${_paths[@]}"; do
+    [ -n "$dir" ] || dir="."
+    cand="$dir/git"
+    [ -x "$cand" ] || continue
+    resolved="$(cd "$dir" 2>/dev/null && pwd)/git"
+    [ "$resolved" = "$SELF" ] && continue
+    echo "$resolved"
+    return 0
+  done
+  echo ""
+}
+
+# 该路径是否豁免行数限制与 spec 要求（.md / tests / test_* / 隐藏文件）
+is_exempt() {
+  local p="$1" base
+  base="$(basename "$p")"
+  case "$base" in
+    .*) return 0 ;;
+  esac
+  case "$p" in
+    *.md) return 0 ;;
+    tests/*|*/tests/*) return 0 ;;
+  esac
+  case "$base" in
+    test_*|*_test.*) return 0 ;;
+  esac
+  return 1
+}
+
+# 代码文件对应的 spec 路径：src/foo.py -> src/foo.spec.md
+spec_of() {
+  local p="$1" dir base
+  dir="$(dirname "$p")"
+  base="$(basename "$p")"
+  base="${base%.*}"
+  echo "${dir}/${base}.spec.md"
+}
+
+# ---------- 主流程 ----------
+
+REAL_GIT="$(resolve_real_git)"
+if [ -z "$REAL_GIT" ]; then
+  echo "git4ai: 找不到真实 git（PATH 中只有 wrapper 自身）" >&2
+  exit 1
+fi
+
+args=("$@")
+
+# 定位子命令（跳过 git 全局选项：-C <dir>、--git-dir=、--work-tree=、-c key=val 等）
+cmd=""
+cmd_idx=-1
+for ((i=0; i<${#args[@]}; i++)); do
+  a="${args[$i]}"
+  case "$a" in
+    -C|--git-dir|--work-tree|--namespace|--exec-path)
+      i=$((i+1)) ;;   # 带值全局选项，跳过其值
+    -*) ;;
+    *) cmd="$a"; cmd_idx="$i"; break ;;
+  esac
+done
+
+# 非 commit：一律透传
+if [ "$cmd" != "commit" ]; then
+  exec "$REAL_GIT" "$@"
+fi
+
+# 收集全局参数，供检查命令（diff/log/rev-parse）指向同一仓库
+GLOBAL_ARGS=()
+for ((i=0; i<cmd_idx; i++)); do
+  a="${args[$i]}"
+  case "$a" in
+    -C|--git-dir|--work-tree|--namespace|--exec-path)
+      GLOBAL_ARGS+=("$a" "${args[$((i+1))]:-}")
+      i=$((i+1)) ;;
+    *) GLOBAL_ARGS+=("$a") ;;
+  esac
+done
+
+# 禁止绕过：--no-verify / -n
+for ((i=cmd_idx+1; i<${#args[@]}; i++)); do
+  a="${args[$i]}"
+  case "$a" in
+    --no-verify|-n)
+      echo "✗ git4ai 提交被拒绝：禁止 --no-verify（-n）" >&2
+      echo "    理由：该选项会绕过 git 的 hook 检查，AI 不得用它跳过提交规范。" >&2
+      exit 1 ;;
+  esac
+done
+
+# 提取 commit message 来源（-m / -F / -C / -c / --amend）
+msgs=()
+msg_file=""
+reuse=""
+amend=0
+for ((i=cmd_idx+1; i<${#args[@]}; i++)); do
+  a="${args[$i]}"
+  case "$a" in
+    -m) msgs+=("${args[$((i+1))]:-}"); i=$((i+1)) ;;
+    -m*) msgs+=("${a#-m}") ;;
+    --message=*) msgs+=("${a#--message=}") ;;
+    -F) msg_file="${args[$((i+1))]:-}"; i=$((i+1)) ;;
+    -F*) msg_file="${a#-F}" ;;
+    --file=*) msg_file="${a#--file=}" ;;
+    -c) reuse="${args[$((i+1))]:-}"; i=$((i+1)) ;;
+    -c*) reuse="${a#-c}" ;;
+    -C) reuse="${args[$((i+1))]:-}"; i=$((i+1)) ;;
+    -C*) reuse="${a#-C}" ;;
+    --reuse-message=*|--reedit-message=*) reuse="${a#*=}" ;;
+    --reuse-message|--reedit-message) reuse="${args[$((i+1))]:-}"; i=$((i+1)) ;;
+    --amend) amend=1 ;;
+  esac
+done
+
+# 组装 message；无任何来源则拒绝
+msg=""
+msg_source=""
+if [ "${#msgs[@]}" -gt 0 ]; then
+  for m in "${msgs[@]}"; do
+    msg="${msg}${m}"$'\n'
+  done
+  msg_source="m"
+elif [ -n "$msg_file" ]; then
+  if ! msg="$(cat "$msg_file" 2>/dev/null)"; then
+    echo "✗ git4ai 提交被拒绝：无法读取 message 文件：$msg_file" >&2
+    exit 1
+  fi
+  msg_source="m"
+elif [ -n "$reuse" ]; then
+  msg="$("$REAL_GIT" "${GLOBAL_ARGS[@]}" log -1 --format=%B "$reuse" 2>/dev/null)" || msg=""
+  [ -n "$msg" ] && msg_source="m"
+elif [ "$amend" -eq 1 ]; then
+  msg="$("$REAL_GIT" "${GLOBAL_ARGS[@]}" log -1 --format=%B HEAD 2>/dev/null)" || msg=""
+  [ -n "$msg" ] && msg_source="m"
+fi
+
+if [ -z "$msg_source" ]; then
+  echo "✗ git4ai 提交被拒绝：没有可检查的 commit message" >&2
+  echo "    理由：git4ai 只支持 -m / -F / --amend / -C 方式提供提交说明，编辑器交互式提交不在支持范围。" >&2
+  echo "    → 请用 -m 提供提交说明（AI 用法：git commit -m \"...\"，去空白 ≥ 300 字）" >&2
+  exit 1
+fi
+
+# 检查 1：变更行数（暂存区 numstat，新增+删除）
+numstat="$("$REAL_GIT" "${GLOBAL_ARGS[@]}" diff --cached --numstat 2>/dev/null)"
+add_total=0
+del_total=0
+changed_paths=()
+per_file=()
+while IFS= read -r line; do
+  [ -z "$line" ] && continue
+  a="${line%%	*}"; rest="${line#*	}"
+  d="${rest%%	*}"; path="${rest#*	}"
+  changed_paths+=("$path")
+  [ "$a" = "-" ] && a=0
+  [ "$d" = "-" ] && d=0
+  per_file+=("$path|$a|$d")
+  if ! is_exempt "$path"; then
+    add_total=$((add_total + a))
+    del_total=$((del_total + d))
+  fi
+done <<< "$numstat"
+total=$((add_total + del_total))
+
+# 检查 2：message 长度（去空白字符数）
+msg_nw="${msg//[[:space:]]/}"
+chars="${#msg_nw}"
+
+# 检查 3：spec 同步（首次 commit 豁免）
+first_commit=0
+if ! "$REAL_GIT" "${GLOBAL_ARGS[@]}" rev-parse --verify -q HEAD >/dev/null 2>&1; then
+  first_commit=1
+fi
+spec_missing=()
+if [ "$first_commit" -eq 0 ]; then
+  for p in "${changed_paths[@]}"; do
+    is_exempt "$p" && continue
+    case "$p" in *.spec.md) continue ;; esac
+    sp="$(spec_of "$p")"
+    found=0
+    for cp in "${changed_paths[@]}"; do
+      [ "$cp" = "$sp" ] && found=1
+    done
+    [ "$found" -eq 0 ] && spec_missing+=("$p")
+  done
+fi
+
+# 汇总违规并输出可执行的修复建议
+line_over=0; msg_short=0; spec_bad=0
+[ "$total" -gt "$MAX_LINES" ] && line_over=1
+[ "$chars" -lt "$MIN_MSG_CHARS" ] && msg_short=1
+[ "${#spec_missing[@]}" -gt 0 ] && spec_bad=1
+violations=$((line_over + msg_short + spec_bad))
+
+if [ "$violations" -gt 0 ]; then
+  n=0
+  out="✗ git4ai 提交被拒绝：${violations} 项规范未满足"$'\n\n'
+  if [ "$line_over" -eq 1 ]; then
+    n=$((n+1))
+    out="${out}[${n}/${violations}] 变更行数超限：本次共 ${total} 行（+${add_total}/-${del_total}），限额 ${MAX_LINES} 行"$'\n'
+    out="${out}      超限文件明细："$'\n'
+    for pf in "${per_file[@]}"; do
+      p="${pf%%|*}"; rest="${pf#*|}"
+      aa="${rest%%|*}"; dd="${rest#*|}"
+      is_exempt "$p" && continue
+      out="${out}      · ${p}: +${aa}/-${dd}（$((aa+dd)) 行）"$'\n'
+    done
+    out="${out}      建议：拆分为多个 ≤ ${MAX_LINES} 行的小提交（小步修改、小步提交），先提交核心逻辑，再提交配套修改。"$'\n'
+  fi
+  if [ "$msg_short" -eq 1 ]; then
+    n=$((n+1))
+    out="${out}[${n}/${violations}] commit message 过短：当前 ${chars} 字（去空白），要求 ≥ ${MIN_MSG_CHARS} 字，还差 $((MIN_MSG_CHARS - chars)) 字"$'\n'
+    out="${out}      建议：按「为什么改 / 怎么改 / 风险与验证」三段式写满 ${MIN_MSG_CHARS} 字，覆盖变更动机、实现方式与影响面。"$'\n'
+  fi
+  if [ "$spec_bad" -eq 1 ]; then
+    n=$((n+1))
+    out="${out}[${n}/${violations}] 缺少 spec 同步：以下代码文件的 .spec.md 不在本次变更中"$'\n'
+    for p in "${spec_missing[@]}"; do
+      out="${out}      · ${p} → 需要 $(spec_of "$p")（新增或修改，且必须与代码同一次提交）"$'\n'
+    done
+    out="${out}      建议：按 spec 模板补充「用途 / 对外接口 / 边界与异常用例 / 依赖与影响面 / 变更记录」。"$'\n'
+  fi
+  out="${out}"$'\n'"（未做任何修改，工作区与暂存区保持原样。修复后重新 git commit 即可。）"
+  echo "$out" >&2
+  exit 1
+fi
+
+# 全部通过：调用真实 git
+exec "$REAL_GIT" "$@"
