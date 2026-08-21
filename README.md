@@ -66,6 +66,22 @@ git --version         # 应正常显示 git 版本（透传验证）
 
 卸载：`rm ~/.local/bin/git` 即可，真实 git 不受任何影响。
 
+## Windows 版（Go 编译 git.exe）
+
+bash 版面向 macOS/Linux;Windows 下用 Go 把 wrapper 编译成真正的 `git.exe`(cmd 与 PowerShell 都按 PATH 顺序命中,覆盖面比 bat 更广)。
+
+```bat
+cd win
+install.bat        :: 编译 bin\git.exe → 复制到 %USERPROFILE%\.git4ai\bin → 提示加 PATH 前置
+setx Path "%USERPROFILE%\.git4ai\bin;%Path%"   :: 或到"环境变量"图形界面把该目录排到最前
+git --version      :: 应正常显示 git 版本(透传)
+git commit -m "短"  :: 应被 git4ai 拒绝(演示拦截)
+```
+
+- 源码在 `win/main.go`,规格见 `win/main.spec.md`;逻辑与 bash 版一致(三条检查 + 透传,阈值 50/300)。
+- **局限**:只拦"按 PATH 解析 git"的调用(cmd / PowerShell / 取 PATH 的 IDE);直接调 `git.exe` 绝对路径或工具内部固定解析真实 git 的调用会被绕过。
+- 无法运行 bash 环境时,`win/` 即 Windows 版本体。
+
 ## 对 AI 的使用提示（如果你是被 git4ai 约束的 AI）
 
 - 每次提交前先看 `git diff --cached --stat`，**主动拆分**超过 50 行的变更为多个提交
@@ -100,7 +116,7 @@ git --version         # 应正常显示 git 版本（透传验证）
 - [ ] `git4ai check` 子命令：提交前干跑检查
 - [ ] `git4ai rollback`：手动回滚违规暂存（可选开关）
 - [ ] push 拦截（可选）
-- [ ] Windows（Git Bash）适配
+- [x] Windows 适配（Go 编译 git.exe,见 `win/`,已实现三条检查 + 透传）
 
 ## 开发与测试
 
