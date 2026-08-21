@@ -84,6 +84,8 @@ git commit -m "短"  :: 应被 git4ai 拒绝(演示拦截)
 
 ## 对 AI 的使用提示（如果你是被 git4ai 约束的 AI）
 
+> 📌 **先加载 `skills/git4ai/SKILL.md`**：那是一个完整的 skill，把下面的三条规范变成你每次 commit 前的自查流程（行数 / message 字数 / spec 同步），照着做一次过。
+
 - 每次提交前先看 `git diff --cached --stat`，**主动拆分**超过 50 行的变更为多个提交
 - commit message 用 `git commit -m "..."` 传入（**不要**打开编辑器交互式提交），写满 300 字：
   为什么改 → 怎么改 → 风险与验证
